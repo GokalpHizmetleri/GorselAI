@@ -1,0 +1,9 @@
+# Büyük veri seti ve ara çıktılar
+datasets/
+runs/
+.venv/
+__pycache__/
+*.log
+yolo11n.pt
+*_saved_model/
+calibration_image_sample_data*.npy
