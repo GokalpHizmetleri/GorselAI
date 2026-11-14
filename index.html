@@ -21,8 +21,13 @@
 
     <header id="topbar">
       <div id="stats"><span id="fps">-- FPS</span><span id="infer">-- ms</span><span id="backend">…</span></div>
-      <button id="langBtn" class="pill" aria-label="Dil değiştir">TR</button>
+      <div class="right">
+        <button id="modeBtn" class="pill" aria-label="Model modu">…</button>
+        <button id="langBtn" class="pill" aria-label="Dil değiştir">TR</button>
+      </div>
     </header>
+
+    <div id="toast"></div>
 
     <footer id="controls">
       <div id="count" class="pill">0 nesne</div>
@@ -37,7 +42,7 @@
       <p id="status">Model yükleniyor…</p>
       <div id="bar"><div id="barFill"></div></div>
       <button id="startBtn" hidden>Kamerayı Başlat</button>
-      <small>YOLO11n · 320px · 80 nesne sınıfı · Tamamen cihaz üzerinde</small>
+      <small>YOLO26 · tam COCO ile eğitilmiş · 80 nesne sınıfı · Tamamen cihaz üzerinde</small>
     </section>
   </main>
   <script src="vendor/ort.webgpu.min.js"></script>

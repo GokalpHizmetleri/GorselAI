@@ -27,7 +27,14 @@ html, body {
   display: flex; justify-content: space-between; align-items: center;
   background: linear-gradient(rgba(0,0,0,.55), transparent);
 }
-#stats { display: flex; gap: 8px; font: 600 12px/1 ui-monospace, Menlo, monospace; }
+.right { display: flex; gap: 8px; }
+#toast {
+  position: absolute; left: 50%; top: calc(var(--safe-top) + 64px); transform: translateX(-50%);
+  background: var(--glass); backdrop-filter: blur(6px); padding: 8px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; white-space: nowrap; opacity: 0; transition: opacity .25s; pointer-events: none;
+}
+#toast.show { opacity: 1; }
+#stats { display: flex; gap: 6px; flex-wrap: wrap; font: 600 12px/1 ui-monospace, Menlo, monospace; }
 #stats span { background: var(--glass); padding: 6px 8px; border-radius: 8px; backdrop-filter: blur(6px); }
 
 #controls {
