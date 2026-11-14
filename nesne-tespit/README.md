@@ -5,52 +5,57 @@ Telefon kamerasıyla **tamamen cihaz üzerinde** çalışan, gerçek zamanlı ne
 
 **Canlı demo:** https://gokalphizmetleri.github.io/GorselAI/
 
+## Modeller
+Kendi 2.000 görsellik ince ayar modelimiz (mAP50 0.422) kaldırıldı. Yerine tam COCO veri setinde
+(118 bin görsel) Ultralytics tarafından eğitilmiş resmi **YOLO26** modelleri kullanılıyor.
+Arayüzdeki **mod butonu** ile seçilir:
+
+| Mod | Model | Giriş | mAP50 (fp32 / int8) | Web dosyası |
+|---|---|---|---|---|
+| Hızlı | YOLO26n | 416 | 0.519 / 0.502 | 9.8 MB / 3.0 MB |
+| **Dengeli** (WebGPU varsa varsayılan) | YOLO26s | 416 | 0.618 / 0.604 | 38 MB / 10 MB |
+| Hassas | YOLO26m | 320 | 0.638 / 0.619 | 82 MB / 21 MB |
+
+Ölçüm: COCO val2017'den 500 görsel. WebGPU olan telefonlarda fp32, olmayanlarda int8 (WASM) dosyası yüklenir.
+WebGPU yoksa varsayılan mod Hızlı'dır. Modeller ilk kullanıldıklarında indirilir ve önbelleğe alınır.
+
+### Mobil uygulamalar için (.tflite / LiteRT) — `models/`
+| Dosya | mAP50 | Not |
+|---|---|---|
+| yolo26n_416_int8.tflite | 0.509 | Tam INT8 – NPU/DSP/CPU, en hızlı |
+| yolo26n_416_w8a16.tflite | 0.516 | INT8 ağırlık + 16-bit aktivasyon – GPU delegate |
+| yolo26s_416_int8.tflite | 0.612 | Tam INT8 |
+| yolo26s_416_w8a16.tflite | 0.616 | GPU delegate |
+
+Giriş `[1, 416, 416, 3]` float32 RGB 0–1 (letterbox, dolgu 114); çıkış `[1, 84, 3549]` → 4 kutu (cx, cy, w, h, piksel) + 80 sınıf skoru; NMS uygulamada yapılır.
+
 ## Klasör yapısı
 ```
 nesne-tespit/
 ├── web/                 # GitHub Pages'te yayınlanan mobil PWA
-│   ├── index.html  app.js  style.css  labels.js
-│   ├── manifest.json  service-worker.js  icons/
-│   ├── model/           # yolo11n_320.onnx (WebGPU), yolo11n_320_int8.onnx (WASM)
-│   └── vendor/          # onnxruntime-web 1.22 (çevrimdışı çalışma için yerel kopya)
-├── models/              # Mobil uygulamalara gömülecek modeller (.tflite, .onnx, .pt)
-├── scripts/             # prepare_dataset.py, train.py, export.py, evaluate.py
-├── results/             # Eğitim grafikleri ve metrikleri
+│   ├── index.html  app.js  style.css  labels.js  manifest.json  service-worker.js  icons/
+│   ├── model/           # hizli / dengeli / hassas (.onnx fp32 + _int8.onnx)
+│   └── vendor/          # onnxruntime-web 1.22 (yerel kopya)
+├── models/              # Tüm dışa aktarılmış modeller (.onnx, .tflite)
+├── scripts/             # prepare_dataset.py (kalibrasyon/ölçüm verisi), export.py, evaluate.py
 └── requirements.txt
 ```
 
-## Veri seti
-COCO 2017 val (Ultralytics YOLO etiketleri) içinden rastgele **2.500 görsel** alındı: 2.000 eğitim / 500 doğrulama, 80 sınıf.
-Veri seti `.gitignore`'da; yeniden üretmek için:
+## Yeniden üretme
 ```bash
+pip install -r requirements.txt
+# Kalibrasyon ve ölçüm için COCO alt kümesi (datasets/ .gitignore'da):
 curl -LO https://github.com/ultralytics/assets/releases/download/v0.0.0/coco2017labels.zip
-curl -LO http://images.cocodataset.org/zips/val2017.zip   # datasets/raw/ içine açın
+curl -LO http://images.cocodataset.org/zips/val2017.zip   # ikisini datasets/raw/ içine açın
 python scripts/prepare_dataset.py
+python scripts/export.py     # ONNX + TFLite üretir, web/model'e kopyalar
+python scripts/evaluate.py   # doğruluk tablosu
 ```
 
-## Eğitim (CPU, 4 vCPU)
-`yolo11n.pt` (COCO ön-eğitimli) → `imgsz=320`, SGD lr0=0.001, warmup yok, omurga donuk (`freeze=10`), en fazla 15 epoch
-(erken durdurma 8. epoch sonunda devreye girdi, en iyi sonuç 2. epoch). 2.000 görselle agresif eğitim 118 bin görsellik ön-eğitimi bozduğundan
-koruyucu bir ince ayar yapıldı.
-
-## Sonuçlar (500 doğrulama görseli, 320 px)
-| Model | Boyut | mAP50 | mAP50-95 | Kullanım |
-|---|---|---|---|---|
-| yolo11n_320_best.pt | 5.5 MB | 0.419 | 0.285 | PyTorch |
-| yolo11n_320.onnx (fp32) | 10.6 MB | 0.427 | 0.288 | Tarayıcı – WebGPU |
-| yolo11n_320_int8.onnx (QDQ statik int8) | 3.1 MB | 0.418 | 0.276 | Tarayıcı – WASM/CPU |
-| yolo11n_320_int8.tflite (tam int8) | 3.2 MB | 0.419 | 0.282 | Android/iOS – NPU/DSP/CPU |
-| yolo11n_320_w8a16.tflite (int8 ağırlık + 16-bit aktivasyon) | 3.1 MB | 0.421 | 0.280 | Android/iOS – GPU delegate |
-
-Karşılaştırma: ön-eğitimli `yolo11n.pt` aynı sette 0.434 / 0.300 veriyor.
-
 ## Web uygulaması
-- Arka kamera (`facingMode: "environment"`), ön/arka değiştirme butonu, tam ekran, ekranın açık kalması (Wake Lock).
-- ONNX Runtime Web: önce **WebGPU** (fp32), desteklenmezse **WASM** (int8) kullanılır.
-- Çıkarım döngüsü video karesine kilitli (`requestVideoFrameCallback`), çizim ayrı bir `requestAnimationFrame` döngüsünde.
-  IoU tabanlı takipçi + yumuşatma + hız tahmini sayesinde kamera hareket ederken kutular iki çıkarım arasında da ilerletilir.
+- Arka kamera (`facingMode: "environment"`), ön/arka değiştirme, tam ekran, ekran açık kalır (Wake Lock).
+- Mod butonu: Hızlı / Dengeli / Hassas. Yeni model yüklenirken eskisi çalışmaya devam eder.
+- Çıkarım video karesine kilitli (`requestVideoFrameCallback`), çizim ayrı `requestAnimationFrame` döngüsünde;
+  IoU takipçi + yumuşatma + hız tahmini ile kamera hareket ederken kutular akıcı ilerler.
 - Dil: TR → EN → TR/EN. Güven eşiği: 25 / 35 / 50 / 65 %.
-- PWA: `manifest.json` + `service-worker.js`; ilk açılıştan sonra internet olmadan çalışır, “Ana ekrana ekle” ile uygulama gibi açılır.
-
-## Mobil uygulamaya gömme (.tflite)
-Giriş: `[1, 320, 320, 3]` float32 RGB, 0–1 aralığında (letterbox, dolgu 114). Çıkış: `[1, 84, 2100]` → 4 kutu (cx, cy, w, h; piksel) + 80 sınıf skoru; NMS uygulamada yapılır.
+- PWA: uygulama ve kullanılan modeller önbelleğe alınır, sonra internetsiz çalışır.

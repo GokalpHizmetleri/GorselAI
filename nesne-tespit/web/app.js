@@ -1,23 +1,29 @@
-// Nesne Tespit — YOLO11n (320px) tarayıcı içi gerçek zamanlı nesne tespiti
-// ONNX Runtime Web: WebGPU (varsa) → WASM (int8 kuantize model) yedek yolu.
+// Nesne Tespit — tarayıcı içi gerçek zamanlı nesne tespiti
+// Modeller: resmi YOLO26 (tam COCO, 118 bin görsel ile eğitilmiş, 80 sınıf).
+// ONNX Runtime Web: WebGPU (fp32) → WASM (int8 kuantize) yedek yolu.
 import { LABELS_EN, LABELS_TR } from "./labels.js";
 
-const INPUT = 320;              // model giriş boyutu
 const IOU_NMS = 0.45;
 const MAX_DET = 50;
-const MODEL_GPU = "model/yolo11n_320.onnx";       // fp32 — WebGPU
-const MODEL_CPU = "model/yolo11n_320_int8.onnx";  // int8 — WASM (CPU)
+const MODES = {
+  hizli:   { label: "Hızlı",   size: 416, name: "YOLO26n" },
+  dengeli: { label: "Dengeli", size: 416, name: "YOLO26s" },
+  hassas:  { label: "Hassas",  size: 320, name: "YOLO26m" },
+};
+const MODE_ORDER = ["hizli", "dengeli", "hassas"];
+let INPUT = 416; // aktif modelin giriş boyutu
 
 const $ = (id) => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 const ui = {
   fps: $("fps"), infer: $("infer"), backend: $("backend"), count: $("count"),
   status: $("status"), barFill: $("barFill"), splash: $("splash"), startBtn: $("startBtn"),
-  flipBtn: $("flipBtn"), langBtn: $("langBtn"), confBtn: $("confBtn"),
+  flipBtn: $("flipBtn"), langBtn: $("langBtn"), confBtn: $("confBtn"), modeBtn: $("modeBtn"),
+  toast: $("toast"),
 };
 
 const state = {
-  session: null, inputName: null, outputName: null,
+  session: null, inputName: null, outputName: null, ep: null, mode: null, loading: false,
   facing: "environment", stream: null, running: false, busy: false,
   lang: localGet("lang", "TR"), conf: Number(localGet("conf", "0.35")),
   tracks: [], nextId: 1, lastInferTs: 0,
@@ -27,9 +33,13 @@ const state = {
 
 // Ön işleme için tekrar kullanılan tamponlar (GC baskısını önler)
 const prep = document.createElement("canvas");
-prep.width = prep.height = INPUT;
 const prepCtx = prep.getContext("2d", { willReadFrequently: true });
-const inputData = new Float32Array(3 * INPUT * INPUT);
+let inputData = new Float32Array(0);
+function setInputSize(n) {
+  INPUT = n;
+  prep.width = prep.height = n;
+  inputData = new Float32Array(3 * n * n);
+}
 
 function localGet(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }
 function localSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -55,39 +65,77 @@ async function fetchWithProgress(url, onProgress) {
   return out;
 }
 
-async function loadModel() {
+async function hasWebGPU() {
+  try { return !!(navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { return false; }
+}
+
+async function createSession(mode, ep, onProgress) {
+  const url = `model/${mode}${ep === "wasm" ? "_int8" : ""}.onnx`;
+  const bytes = await fetchWithProgress(url, onProgress);
+  const session = await ort.InferenceSession.create(bytes, {
+    executionProviders: [ep],
+    graphOptimizationLevel: "all",
+  });
+  const n = MODES[mode].size;
+  // Isınma çalıştırması (ilk karedeki gecikmeyi önler)
+  const warm = new ort.Tensor("float32", new Float32Array(3 * n * n), [1, 3, n, n]);
+  await session.run({ [session.inputNames[0]]: warm });
+  return session;
+}
+
+// Modeli yükler; WebGPU başarısız olursa WASM'a düşer. Yeni model hazır olana kadar eskisi çalışmaya devam eder.
+async function loadModel(mode) {
   ort.env.wasm.wasmPaths = new URL("vendor/", location.href).href;
   ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
   ort.env.wasm.simd = true;
 
-  const attempts = [];
-  if ("gpu" in navigator) attempts.push({ ep: "webgpu", url: MODEL_GPU, label: "WebGPU" });
-  attempts.push({ ep: "wasm", url: MODEL_CPU, label: "WASM int8" });
+  const eps = state.ep ? [state.ep] : (await hasWebGPU()) ? ["webgpu", "wasm"] : ["wasm"];
+  if (!mode) mode = localGet("mode", eps[0] === "webgpu" ? "dengeli" : "hizli");
+  if (!MODES[mode]) mode = "hizli";
 
+  state.loading = true;
+  updateButtons(mode);
   let lastErr;
-  for (const a of attempts) {
-    try {
-      ui.status.textContent = `Model yükleniyor (${a.label})…`;
-      const bytes = await fetchWithProgress(a.url, (p) => (ui.barFill.style.width = `${Math.round(p * 90)}%`));
-      const session = await ort.InferenceSession.create(bytes, {
-        executionProviders: [a.ep],
-        graphOptimizationLevel: "all",
-      });
-      // Isınma çalıştırması (ilk karedeki gecikmeyi önler)
-      const warm = new ort.Tensor("float32", new Float32Array(3 * INPUT * INPUT), [1, 3, INPUT, INPUT]);
-      await session.run({ [session.inputNames[0]]: warm });
-      state.session = session;
-      state.inputName = session.inputNames[0];
-      state.outputName = session.outputNames[0];
-      ui.backend.textContent = a.label;
-      ui.barFill.style.width = "100%";
-      return;
-    } catch (e) {
-      console.warn(`${a.label} başarısız:`, e);
-      lastErr = e;
+  try {
+    for (const ep of eps) {
+      try {
+        const lbl = `${MODES[mode].label} · ${ep === "webgpu" ? "WebGPU" : "CPU"}`;
+        ui.status.textContent = `Model yükleniyor (${lbl})…`;
+        const session = await createSession(mode, ep, (p) => {
+          ui.barFill.style.width = `${Math.round(p * 90)}%`;
+          if (state.running) showToast(`${MODES[mode].label} model yükleniyor… %${Math.round(p * 100)}`);
+        });
+        const old = state.session;
+        while (state.busy) await new Promise((r) => setTimeout(r, 5)); // süren çıkarımı bekle
+        state.session = session;
+        state.inputName = session.inputNames[0];
+        state.outputName = session.outputNames[0];
+        state.ep = ep; state.mode = mode; state.tracks = [];
+        setInputSize(MODES[mode].size);
+        localSet("mode", mode);
+        ui.backend.textContent = `${MODES[mode].name} · ${ep === "webgpu" ? "GPU" : "CPU"}`;
+        ui.barFill.style.width = "100%";
+        old?.release?.();
+        if (state.running) showToast(`${MODES[mode].label} mod hazır (${MODES[mode].name})`, 1500);
+        return;
+      } catch (e) {
+        console.warn(`${mode}/${ep} başarısız:`, e);
+        lastErr = e;
+      }
     }
+    throw lastErr;
+  } finally {
+    state.loading = false;
+    updateButtons();
   }
-  throw lastErr;
+}
+
+let toastTimer;
+function showToast(text, hideAfter = 0) {
+  ui.toast.textContent = text;
+  ui.toast.classList.add("show");
+  clearTimeout(toastTimer);
+  if (hideAfter) toastTimer = setTimeout(() => ui.toast.classList.remove("show"), hideAfter);
 }
 
 // ---------------------------------------------------------------- kamera
@@ -316,7 +364,9 @@ function roundRect(x, y, w, h, r) {
 }
 
 // ---------------------------------------------------------------- UI
-function updateButtons() {
+function updateButtons(pendingMode) {
+  const m = pendingMode || state.mode;
+  if (m) ui.modeBtn.textContent = MODES[m].label + (state.loading ? "…" : "");
   ui.langBtn.textContent = state.lang === "BOTH" ? "TR/EN" : state.lang;
   ui.confBtn.textContent = `≥ ${Math.round(state.conf * 100)}%`;
 }
@@ -329,6 +379,12 @@ ui.confBtn.onclick = () => {
   const steps = [0.25, 0.35, 0.5, 0.65];
   state.conf = steps[(steps.indexOf(state.conf) + 1) % steps.length];
   localSet("conf", String(state.conf)); updateButtons();
+};
+ui.modeBtn.onclick = async () => {
+  if (state.loading) return;
+  const next = MODE_ORDER[(MODE_ORDER.indexOf(state.mode) + 1) % MODE_ORDER.length];
+  try { await loadModel(next); }
+  catch (e) { showToast("Model yüklenemedi: " + e.message, 3000); }
 };
 ui.flipBtn.onclick = async () => {
   state.facing = state.facing === "environment" ? "user" : "environment";
