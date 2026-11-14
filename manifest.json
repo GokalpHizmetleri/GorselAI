@@ -1,0 +1,16 @@
+{
+  "name": "Nesne Tespit — Canlı YOLO11n",
+  "short_name": "Nesne Tespit",
+  "description": "Telefon kamerasıyla cihaz üzerinde gerçek zamanlı nesne tespiti (80 sınıf).",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "lang": "tr",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
